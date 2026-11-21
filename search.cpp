@@ -17,7 +17,6 @@ namespace
   const int BURST = 5000;             // segments to drive per turn on a robot
   const double DEBRIS_BOOST = 1.0;    // score added per debris found on a path
   const double NEIGHBOR_BOOST = 0.5;  // score added to the paths on either side
-  const double DECAY = 0.5;           // score multiplier after a burst with no debris
 
   struct Entry
   {
@@ -134,7 +133,7 @@ SearchResult Search::findShipwreck()
     else
     {
       // A whole burst with nothing: this lead is cooling off.
-      score[robot] *= DECAY;
+      score[robot] = 0.0;
     }
 
     if (position < limit[robot])

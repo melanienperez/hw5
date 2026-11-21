@@ -1,3 +1,4 @@
+
 /*
  * STUDENT CODE - EDIT THIS FILE
  */
@@ -11,9 +12,12 @@
 namespace
 {
   // Tuning knobs: change these and re-run the performance tests.
-  const double DEBRIS_BOOST = 1.0;    // added to a path's score when it finds debris
-  const double NEIGHBOR_BOOST = 0.5;  // added to the paths on either side
-  const double DECAY = 0.75;          // score multiplier after a drive with no debris
+  // A switch costs SWITCH_COST (200) ticks, so each turn on a robot should
+  // cover many segments. With BURST = 5000, switching adds only ~4% overhead.
+  const int BURST = 5000;             // segments to drive per turn on a robot
+  const double DEBRIS_BOOST = 1.0;    // score added per debris found on a path
+  const double NEIGHBOR_BOOST = 0.5;  // score added to the paths on either side
+  const double DECAY = 0.5;           // score multiplier after a burst with no debris
 
   struct Entry
   {
@@ -43,9 +47,7 @@ SearchResult Search::findShipwreck()
 {
   const int robotCount = mothership.getRobotCount();
 
-  // 1. Work out each robot's last safe segment ONCE.
-  //    The old code looped over every abyss for every robot (robots x abysses),
-  //    which is what made test 13 take 3 seconds.
+  // 1. Each robot's last safe segment, computed once (robots + abysses).
   std::vector<int> limit(robotCount, TETHER_LENGTH);
   for (const Location &abyss : mothership.getAbysses())
   {
@@ -64,8 +66,7 @@ SearchResult Search::findShipwreck()
     }
   }
 
-  // When a path's score changes, push a fresh entry. The old one goes stale
-  // and gets skipped when it reaches the top.
+  // When a path's score changes, push a fresh entry; the old one goes stale.
   auto boost = [&](int robot, double amount)
   {
     if (robot < 0 || robot >= robotCount)
@@ -77,10 +78,9 @@ SearchResult Search::findShipwreck()
     queue.push({score[robot], position, robot});
   };
 
-  int activeRobot = -1;
+  int activeRobot = mothership.getActiveRobot();
 
-  // 2. Best-first search: always drive the most promising path one chunk.
-  //    With no debris anywhere, this acts like round robin (least-explored first).
+  // 2. Best-first search: give the most promising path a long burst.
   while (!queue.empty())
   {
     Entry top = queue.top();
@@ -95,32 +95,45 @@ SearchResult Search::findShipwreck()
       continue;
     }
 
-    // Only switch when needed, so a hot path keeps its robot.
     if (robot != activeRobot)
     {
       mothership.switchToRobot(robot);
       activeRobot = robot;
     }
 
-    DriveResult result = mothership.driveActiveRobot(
-        std::min(MAX_SEGMENTS_PER_DRIVE, limit[robot] - position));
-    position = mothership.getRobotPosition(robot);
+    int burstEnd = std::min(limit[robot], position + BURST);
+    int debrisFound = 0;
 
-    if (result.reason == DriveStopReason::ShipwreckFound)
+    while (position < burstEnd)
     {
-      return SearchResult{true, Location{robot, position}};
+      DriveResult result = mothership.driveActiveRobot(
+          std::min(MAX_SEGMENTS_PER_DRIVE, burstEnd - position));
+      position = mothership.getRobotPosition(robot);
+
+      if (result.reason == DriveStopReason::ShipwreckFound)
+      {
+        return SearchResult{true, Location{robot, position}};
+      }
+
+      if (result.reason == DriveStopReason::DebrisFound)
+      {
+        seafloorSurvey.recordDebris({robot, position});
+        ++debrisFound;
+        // The wreck should be within SIGNAL_RANGE of its debris, so keep
+        // going at least that far past the latest debris before switching.
+        burstEnd = std::min(limit[robot], std::max(burstEnd, position + SIGNAL_RANGE));
+      }
     }
 
-    if (result.reason == DriveStopReason::DebrisFound)
+    if (debrisFound > 0)
     {
-      seafloorSurvey.recordDebris({robot, position});
-      score[robot] += DEBRIS_BOOST;
-      boost(robot - 1, NEIGHBOR_BOOST);
-      boost(robot + 1, NEIGHBOR_BOOST);
+      score[robot] += DEBRIS_BOOST * debrisFound;
+      boost(robot - 1, NEIGHBOR_BOOST * debrisFound);
+      boost(robot + 1, NEIGHBOR_BOOST * debrisFound);
     }
     else
     {
-      // Nothing here: let this lead cool off (handles false leads, test 08).
+      // A whole burst with nothing: this lead is cooling off.
       score[robot] *= DECAY;
     }
 
